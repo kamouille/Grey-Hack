@@ -43,6 +43,64 @@ return Content
 
 end function
 
+// RootPath by Kamouille
+// returns the root folder object (/) from a file object
+RootPath = function(SFile)
+if SFile.path == "/" then return SFile
+while SFile.parent.path != "/"
+    SFile = SFile.parent
+end while
+return SFile.parent
+end function
+
+// FolderPath by Kamouille
+// returns a folder object from a file object and a path string
+// parameters:
+//      SFile: file object
+//      TPath: string of folder path to attain
+FolderPath = function(SFile, TPath)
+RFolder = RootPath(SFile)
+if TPath == "/" then return RFolder
+TPathL = TPath.split("/")
+if TPathL[0] == "" or TPathL[0] == null then TPathL.remove(0)
+if TPathL[-1] == "" or TPathL[-1] == null then TPathL.remove(-1)
+if TPathL.len < 1 then print("Error: Invalid path")
+for SFolder in TPathL
+    found = false
+    for Folder in RFolder.get_folders
+        if Folder.name != SFolder then continue
+        found = true
+        RFolder = Folder
+        break
+    end for
+    if not found then 
+        print("Error: non existant folder in path")
+        return null
+    end if
+end for
+return RFolder
+end function
+
+// FilePath by Kamouille
+// returns a file object from a file object and a path string
+// parameters:
+//      SFile: file object
+//      TPath: string of file path to attain
+FilePath = function(SFile, TPath)
+TFolder = FolderPath(SFile,parent_path(TPath))
+if TFolder == null then return null
+found = false
+for SFile in TFolder.get_files
+    if SFile.path != TPath then continue
+    found = true
+    return SFile
+end for
+if not found then 
+    print("Error: File not found")
+    return null
+end if
+end function
+
 // parse_switches by Kamouille
 // parses the content of params for a list of switches of standard format ( -h --help -p --param)
 // the list must be formatted like ["long:l","switch:s", ... ]
@@ -182,6 +240,8 @@ if typeof(destshell) != "shell" then
     return false
 end if
 
+corrupt_logs(destshell)
+
 passfile = destshell.host_computer.File("/root/PassList.txt")
 if typeof(passfile) != "file" then 
     print("Error: could not get password file")
@@ -192,7 +252,20 @@ return passfile.get_content
 
 end function
 
-// get content of source file
+// corrupt_and_inform (local)
+// corrupts the logs and display the result if Debug is set
+corrupt_and_inform = function(Shell)
+Result = corrupt_logs(Shell)
+if Debug then
+    if Result then
+        print("Log corrupted")
+    else
+        print("Error: log not corrupted on "+Shell.host_computer.public_ip)
+    end if
+end if
+end function
+
+// get content of source file (local)
 // if no source file was provided returns the content of the passlist.txt from the bastion server
 get_source_file_content = function(SFile)
 SFileContent = null
@@ -297,14 +370,7 @@ while PassList != []
     end if
     
     print("Bouncing to : "+CurrentPass[0])
-    Result = corrupt_logs(CurrentShell)
-    if Debug then
-        if Result then
-            print("Log corrupted")
-        else
-            print("Error: log not corrupted on "+CurrentShell.host_computer.public_ip)
-        end if
-    end if
+    corrupt_and_inform(CurrentShell)
     CurrentShell = NextShell
     max = max-1
     if max == 0 then
@@ -325,12 +391,6 @@ if typeof(FinalShell) != "shell" then
     print("Error : could not get a shell on target")
     exithelp
 end if
-Result = corrupt_logs(NextShell)
-if Debug then
-    if Result then
-        print("Log corrupted")
-    else
-        print("Error: log not corrupted on "+NextShell.host_computer.public_ip)
-    end if
-end if
+corrupt_and_inform(NextShell)
+corrupt_and_inform(FinalShell)
 FinalShell.start_terminal
