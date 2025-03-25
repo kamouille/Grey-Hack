@@ -1,0 +1,336 @@
+//clear_screen
+print("Socks Chain SSH Bounce v1.0 by Kamouille")
+
+// Function Declaration
+
+exithelp = function()
+    helpstr = "Bounce a connexion through a chain of SSH server"
+    helpstr = helpstr+crlf+"Must be provided with a file containing the list of server in the following format:"
+    helpstr = helpstr+crlf+"    <IP_address>:<root_password><line_feed>"
+    helpstr = helpstr+crlf+"If no file is provided, socks will search for a socks.txt file in the user's Config folder"
+    helpstr = helpstr+crlf+"If no socks.txt is found, socks will connect to the bastion server and use its /root/PassList.txt file "
+	helpstr = helpstr+crlf+"if no target is provided socks will connect to the bastion server"
+    helpstr = helpstr+crlf+"Usage: "+program_path.remove(parent_path(program_path+"/"))+" [(opt) (--target/-t) Destination] [(opt) --pass/-p password]  [(opt) --file/-f source_file] [(opt) --max/-m Max_bounces=10] [--randomize/-r]"
+    exit(helpstr)
+end function
+
+// GFC by Kamouille
+// checks if a file exists on the same computer as the input file and returns its content
+// removes the last line if it's empty
+// parameters:
+//      target : file object
+//      filepath: string of a path
+GFC = function(target,filepath)
+if filepath == null then return null
+if typeof(target) != "file" then return null
+cfile = FilePath(target,filepath)
+if cfile == null then return null
+Content = cfile.get_content
+if Content == null then 
+	print("Can't get content of "+filepath)
+	return null
+end if
+if typeof(Content) != "string" then
+	print("Error : content of file "+filepath+" returned a "+typeof(Content))
+	return null
+end if
+if Content.len == 0 then
+	print("Error : content of file "+filepath+" is empty")
+	return null
+end if
+if Content[-1] == crlf then	Content = Content[:Content.len-1]
+return Content
+
+end function
+
+// parse_switches by Kamouille
+// parses the content of params for a list of switches of standard format ( -h --help -p --param)
+// the list must be formatted like ["long:l","switch:s", ... ]
+// returns a map with keys equal to the long form of the switches
+// parameters:
+//      swstr: List object of strings of format "parameter:p"
+parse_switches = function(swstr)
+switches = {}
+for sw in swstr
+    switches[sw.split(":")[0]] = false
+end for
+if params == [] then return switches
+initparams =[]
+for param in params
+    initparams.push(param)
+end for
+i=0
+for param in initparams
+    if param[:2] == "--" then
+        found = false
+        for sw in swstr
+            if param[2:] == sw.split(":")[0] then 
+                switches[sw.split(":")[0]] = true
+                params.remove(i)
+                found = true
+                continue
+            end if
+        end for
+        if found then continue
+    end if
+    if param[0] == "-" then
+        found = false
+        for sw in swstr
+            if param[1:] == sw.split(":")[1] then 
+                switches[sw.split(":")[0]] = true
+                params.remove(i)
+                found = true
+                continue
+            end if
+        end for
+        if found then continue
+    end if
+    i=i+1
+end for
+return switches
+end function
+
+// parse_named_params by Kamouille
+// parses the content of params for a list of named parameters of standard format ( -e/--example <examplevalue> -p/--param <paramvalue>)
+// the list must be formatted like ["example:e","param:p", ... ]
+// if a parameter value is missing returns a string describing the error
+// returns a map with key names equal to the long form of the named parameter and value equal to the following parameter or null if absent
+// parameters:
+//      paramstr: List object of strings of format "parameter:p"
+parse_named_params = function(paramstr)
+named_params = {}
+for pr in paramstr
+    named_params[pr.split(":")[0]] = null
+end for
+if params == [] then return named_params
+
+i=0
+found = false
+for param in params[:]
+    if found then 
+        found = false
+        continue
+    end if
+    found = false
+    for pr in paramstr
+        if param[:2] == "--" and param[2:] == pr.split(":")[0] then found = true
+        if param[:1] == "-" and param[1:] == pr.split(":")[1] then found = true
+        if found then
+            if not params.hasIndex(i+1) then return("Error : no parameter value")
+            if params[i+1][:1] == "-" then return("Error : no parameter value")
+            named_params[pr.split(":")[0]] = params[i+1]
+            params.remove(i)
+            params.remove(i)
+            break
+        end if
+    end for
+    if found then continue
+    i=i+1
+end for
+return named_params
+end function
+
+// corrupt_logs by Kamouille
+// corrupt logs of target shell's computer
+// returns True if successful, False otherwise
+// parameters:
+//      shell: (optional) shell object
+corrupt_logs = function(shell)
+if shell == null then shell = get_shell
+if get_shell_user(shell) != "root" then return false
+shell.host_computer.File("/var/system.log").delete
+shell.host_computer.touch("/var","system.txt")
+LogFile = shell.host_computer.File("/var/system.txt")
+LogFile.set_content("fake file content")
+LogFile.move("/var","system.log")
+return true
+end function
+
+// get_shell_user by Kamouille
+// returns the type of user a shell object runs as
+// parameters:
+//      shell_object: shell object
+get_shell_user = function(shell_object)
+	Testfile = shell_object.host_computer.File("/")
+
+	if FilePath(Testfile,"/etc/passwd").has_permission("r") and FilePath(Testfile,"/etc/passwd").has_permission("w") then return "root"
+
+	for userfolder in FolderPath(Testfile,"/home").get_folders
+    	if userfolder.name == "guest" then continue
+		if userfolder.has_permission("r") and userfolder.has_permission("w") and userfolder.has_permission("x") then return "user"
+	end for
+
+	return "guest"
+end function
+
+// get_passlist by Kamouille
+// returns the content of a PassList.txt file from a remote server
+// parameters:
+//      address: string ip of the server holding the file
+//      port: number port of the ssh service
+//      password : string root password of the server
+get_passlist = function(address,port,password)
+if port == "" or port == null then port=22
+server = BastionServerDN
+if address == "" or address == null then address = nslookup(server)
+user = "root"
+if password == "" or password == null then password = BastionServerPassword
+
+destshell = get_shell.connect_service(address,port,user,password)
+if typeof(destshell) != "shell" then 
+    print("Error: could not get shell")
+    return false
+end if
+
+passfile = destshell.host_computer.File("/root/PassList.txt")
+if typeof(passfile) != "file" then 
+    print("Error: could not get password file")
+    return false
+end if
+
+return passfile.get_content
+
+end function
+
+// get content of source file
+// if no source file was provided returns the content of the passlist.txt from the bastion server
+get_source_file_content = function(SFile)
+SFileContent = null
+if SFile != null then
+    if Debug then print("Trying to open the source file specified by user")
+    SFileContent = GFC(get_shell.host_computer.File("/"),SFile)
+    if SFileContent == null then SFileContent = GFC(get_shell.host_computer.File("/"),current_path+"/"+SFile)
+    if SFileContent == null then
+        print("Error: Could not find the source file specified")
+        exithelp
+    end if
+end if
+if SFileContent == null then
+    if Debug then print("trying to retrieve Config/socks.txt")
+    SFileContent = GFC(get_shell.host_computer.File("/"),home_dir+"/Config/socks.txt")
+    if SFileContent == null and Debug then print("socks.txt not found or empty")
+end if
+if SFileContent == null then
+    if Debug then print("using PassList.txt from bastion server")
+    SFileContent = get_passlist
+    if not SFileContent then exit("Error: could not retrieve PassList.txt from bation server")
+end if
+return SFileContent.split(crlf)
+end function
+
+// Variables
+
+crlf = char(10)
+BastionServerDN = "www.xxx.xxx"
+BastionServerPassword = "password"
+max = 10
+
+// Parameters
+
+swstr = ["help:h","debug:d","randomize:r"]
+switch = parse_switches(swstr)
+if switch.help then exithelp()
+
+Debug = false
+if switch.debug then Debug = true
+
+namestr = ["file:f","max:m","target:t","pass:p"]
+named = parse_named_params(namestr)
+
+SourceFile = named.file
+
+if named.max != null and named.max.val > 0 then max = named.max.val
+
+Target = null
+if params != [] then Target = params[0]
+if Target == null then Target = named.target
+if Target!= null then
+    if not is_valid_ip(Target) then 
+        if Debug then print("Target is not an IP, trying to resolve FQDN")
+        Target = nslookup(Target)
+        if not is_valid_ip(Target) then
+            print("Error: Could not resolve target to an IP")
+            exithelp
+        end if
+    end if
+    TargetPass = named.pass
+    if TargetPass == null then TargetPass = user_input("Enter destination root password : ",true)
+end if
+if Target == null then 
+    Target = nslookup(BastionServerDN)
+    TargetPass = BastionServerPassword
+end if
+
+// Main
+
+PassList = get_source_file_content(SourceFile)
+
+if PassList == null then exit("Error : passlist empty")
+CurrentShell = get_shell
+NextShell = null
+
+while PassList != []
+    if switch.randomize then PassList.shuffle
+    CurrentPass = PassList.pull.split(":")
+    if CurrentPass.len != 2 then 
+        if Debug then print("Error Wrong format - Skiping "+CurrentPass)
+        continue
+    end if
+    NextIP = CurrentPass[0]
+    NextPass = CurrentPass[1]
+    if not is_valid_ip(NextIP) then
+        if Debug then print("not an IP, trying to resolve "+NextIP)
+        NextIP = nslookup(NextIP)
+    end if
+    if not is_valid_ip(NextIP) then
+        if Debug then print("Error not an IP - Skiping"+CurrentPass[0])
+        continue
+    end if
+    if not get_shell.ping(NextIP) then
+        if Debug then print("IP unreachable - Skiping "+CurrentPass[0])
+        continue
+    end if
+    NextShell = CurrentShell.connect_service(NextIP,22,"root",NextPass)
+    if typeof(NextShell) != "shell" then
+        if Debug then print("Error : could not get a shell - Skiping "+CurrentPass[0])
+        continue
+    end if
+    
+    print("Bouncing to : "+CurrentPass[0])
+    Result = corrupt_logs(CurrentShell)
+    if Debug then
+        if Result then
+            print("Log corrupted")
+        else
+            print("Error: log not corrupted on "+CurrentShell.host_computer.public_ip)
+        end if
+    end if
+    CurrentShell = NextShell
+    max = max-1
+    if max == 0 then
+        if Debug then print("Maximum number of bounces obtained")
+        break
+    end if
+end while
+
+if NextShell == null then
+    if Debug then print("Warning could not do any bounce, connecting directly to target") 
+    NextShell = CurrentShell
+end if
+
+print("Final bounce to : "+Target)
+
+FinalShell = NextShell.connect_service(Target,22,"root",TargetPass)
+if typeof(FinalShell) != "shell" then
+    print("Error : could not get a shell on target")
+    exithelp
+end if
+Result = corrupt_logs(NextShell)
+if Debug then
+    if Result then
+        print("Log corrupted")
+    else
+        print("Error: log not corrupted on "+NextShell.host_computer.public_ip)
+    end if
+end if
+FinalShell.start_terminal
