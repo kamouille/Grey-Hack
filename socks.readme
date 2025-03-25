@@ -1,0 +1,2 @@
+The only requirement is having a "bastion" rented server with a file at /root/PassList.txt that contains known IPs and passwords.
+Modify the BastionServerDN and BastionServerPassword variables to match your need.
